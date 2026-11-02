@@ -1,0 +1,110 @@
+-- Silent Aim for Delta Executor
+-- Toggle: Right Ctrl
+
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local UserInputService = game:GetService("UserInputService")
+local Camera = workspace.CurrentCamera
+local LocalPlayer = Players.LocalPlayer
+
+--// Settings
+local Settings = {
+    Enabled = true,
+    TeamCheck = true,
+    WallCheck = false,       -- set true if you don't want to lock through walls
+    FOV = 100,              -- aim radius (pixels)
+    TargetPart = "Head",    -- "Head" or "HumanoidRootPart"
+    ToggleKey = Enum.KeyCode.RightControl
+}
+
+--// FOV Circle
+local Circle = Drawing.new("Circle")
+Circle.Filled = false
+Circle.Thickness = 1
+Circle.Color = Color3.fromRGB(255, 255, 255)
+Circle.Radius = Settings.FOV
+Circle.Visible = true
+
+--// Helpers
+local function getClosestPlayer()
+    local closest, shortest = nil, math.huge
+    local mousePos = UserInputService:GetMouseLocation()
+
+    for _, player in ipairs(Players:GetPlayers()) do
+        if player ~= LocalPlayer then
+            if Settings.TeamCheck and player.Team == LocalPlayer.Team then continue end
+
+            local character = player.Character
+            local humanoid = character and character:FindFirstChildOfClass("Humanoid")
+            local part = character and character:FindFirstChild(Settings.TargetPart)
+
+            if humanoid and humanoid.Health > 0 and part then
+                local screenPos, onScreen = Camera:WorldToViewportPoint(part.Position)
+
+                if onScreen then
+                    local distance = (Vector2.new(screenPos.X, screenPos.Y) - mousePos).Magnitude
+                    if distance <= Settings.FOV and distance < shortest then
+                        if Settings.WallCheck then
+                            local ray = Ray.new(Camera.CFrame.Position, part.Position - Camera.CFrame.Position)
+                            local hit = workspace:FindPartOnRay(ray, LocalPlayer.Character)
+                            if hit and not hit:IsDescendantOf(character) then
+                                continue
+                            end
+                        end
+                        shortest = distance
+                        closest = part
+                    end
+                end
+            end
+        end
+    end
+    return closest
+end
+
+--// Hook (works for most games that use raycasts/legacy shooting)
+local oldNamecall
+oldNamecall = hookmetamethod(game, "__namecall", newcclosure(function(self, ...)
+    local method = getnamecallmethod()
+
+    if Settings.Enabled and (method == "FindPartOnRay" or method == "FindPartOnRayWithIgnoreList" or method == "FindPartOnRayWithWhitelist") then
+        local target = getClosestPlayer()
+        if target then
+            local args = {...}
+            local origin = Camera.CFrame.Position
+            local direction = (target.Position - origin).Unit * 1000
+            local newRay = Ray.new(origin, direction)
+            args[1] = newRay
+            return oldNamecall(self, unpack(args))
+        end
+    end
+
+    if Settings.Enabled and method == "FireServer" or method == "InvokeServer" then
+        -- Falls back to editing Hit args for remote-based games
+        local args = {...}
+        for i, arg in ipairs(args) do
+            if typeof(arg) == "table" and arg.Hit ~= nil then
+                local target = getClosestPlayer()
+                if target then
+                    arg.Hit = target.CFrame
+                end
+            end
+        end
+        return oldNamecall(self, unpack(args))
+    end
+
+    return oldNamecall(self, ...)
+end))
+
+--// Toggle & Render
+UserInputService.InputBegan:Connect(function(input, gpe)
+    if gpe then return end
+    if input.KeyCode == Settings.ToggleKey then
+        Settings.Enabled = not Settings.Enabled
+    end
+end)
+
+RunService.RenderStepped:Connect(function()
+    Circle.Radius = Settings.FOV
+    Circle.Position = UserInputService:GetMouseLocation()
+    Circle.Visible = Settings.Enabled
+end)
